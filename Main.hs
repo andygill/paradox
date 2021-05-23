@@ -47,8 +47,8 @@ instance MuRef (Parser a) where
 
   mapDeRef _ (PureParser a)  = pure PureP
   mapDeRef f (ApParser g h)  = ApP <$> f g <*> f h
-  mapDeRef _ (EmptyParser) = pure $ AltsP []
-  mapDeRef f (AltParser g h) = (\ x y -> AltsP [x,y]) <$> f g <*> f h
+  mapDeRef _ (EmptyParser) = pure $ EmptyP
+  mapDeRef f (AltParser g h) = AltsP <$> f g <*> f h
   mapDeRef _ (SatParser p)   = pure (SatP p)
   mapDeRef f (AsParser p str) = flip AsP str <$> f p
 
@@ -77,14 +77,16 @@ example =  (\ () () -> ()) <$> example <*> example
 data P :: * -> * where
    PureP :: P u
    ApP :: u -> u -> P u
-   AltsP :: [u] -> P u
+   AltsP :: u -> u -> P u
+   EmptyP :: P u
    SatP :: (Char -> Bool) -> P u
    AsP :: u -> String -> P u
 
 instance Show u => Show (P u) where
   show PureP = "Pure"
   show (ApP f g) = "App "  ++ show [f,g]
-  show (AltsP as) = "Alt "  ++ show as
+  show (AltsP a b) = "Alt "  ++ show [a,b]
+  show EmptyP = "Empty"
   show (SatP _) = "Sat *"
   show (AsP u s) = "As " ++ show u ++ " " ++ show s
 
@@ -94,11 +96,20 @@ newtype Symbol = Symbol Int
 instance Show Symbol where
   show (Symbol s) = "s" ++ show s
 
-newtype Symbols = Symbols [Symbol]
+-- Direct traffic through the parser
+-- The only choice is <|>, so we signal
+-- what productions are Left or Right.
+-- We need to have them in the symbol list
+-- because we inline productions.
+
+data Sign = L | R
+  deriving (Eq, Ord, Show)
+
+newtype Symbols = Symbols [Either Sign Symbol]
   deriving (Eq, Ord)
 
 instance Show Symbols where
-  show (Symbols ss) = unwords (map show ss)
+  show (Symbols ss) = unwords $ map (either show show) ss
 
 data Production = Production Symbol Symbols
   deriving (Eq, Ord)
@@ -130,10 +141,14 @@ parseGraphToGrammar (Graph gs s) = Grammar ps (Symbol s) ts names
     ps    = concatMap mkProds gs
 
     mkProds (i, PureP)     = [ mkProd i [] ]
-    mkProds (i, ApP s1 s2) = [ mkProd i [Symbol s1, Symbol s2 ] ]
-    mkProds (i, AltsP ss)  = [ mkProd i [Symbol s] | s <- ss ] 
+    mkProds (i, ApP s1 s2) = [ mkProd i [Right (Symbol s1), Right (Symbol s2) ] ]
+    mkProds (i, AltsP s1 s2)  = 
+        [ mkProd i [Left d, Right $ Symbol s]
+        | (d,s) <- [(L, s1), (R, s2)]
+        ]
+              
     mkProds (i, SatP p)    = [ ]
-    mkProds (i, AsP s _)   = [ mkProd i [Symbol s] ]
+    mkProds (i, AsP s _)   = [ mkProd i [Right (Symbol s)] ]
 
     mkProd i ss = Production (Symbol i) $ Symbols ss
 
@@ -153,7 +168,7 @@ removeEmptyProductionsGrammar (Grammar ps s ts names) = Grammar ps' s ts names
         [ s
         | Production j (Symbols ss) <- ps
         , j == i
-        , s <- ss
+        , Right s <- ss
         ]
 
     ps' = dce [ Production i (Symbols (concatMap inline ss))
@@ -164,7 +179,7 @@ removeEmptyProductionsGrammar (Grammar ps s ts names) = Grammar ps' s ts names
       where live = s : 
               [ s
               | Production _ (Symbols ss) <- xs            
-              , s <- ss
+              , Right s <- ss
               ] 
 
     count = 
@@ -174,18 +189,19 @@ removeEmptyProductionsGrammar (Grammar ps s ts names) = Grammar ps' s ts names
 
     isNonTerminal s = isNothing (lookup s ts)
 
-    inline i 
+    inline (Left d) = [Left d]
+    inline (Right i)
       | isNonTerminal i && i `elem` acyclic =
         case find i of
-          [Production _ (Symbols ss)] -> [ Symbol s | Symbol s <- ss ]
-          _ -> [i]
+          [Production _ (Symbols ss)] -> ss
+          _ -> [Right i]
       | isNonTerminal i =
         -- Really need to do a loop-break here.
         -- s1 -> s2; s2 -> s1, will break.
         case find i of
           [Production _ (Symbols [s])] -> [s]
-          _ -> [i]
-      | otherwise = [i]
+          _ -> [Right i]
+      | otherwise = [Right i]
 
     find i = [ p | p@(Production j _) <- ps, i == j ]
 
@@ -206,15 +222,5 @@ main = do
   print g
   let gr = parseGraphToGrammar g
   print gr
-  print $ removeEmptyProductionsGrammar gr
   let gr2 = fixGrammar removeEmptyProductionsGrammar gr
   print gr2
-{-
-  print $ removeEmptyProductionsGrammar gr2
-  let (gr3, _, _, _) = removeEmptyProductionsGrammar gr2
-  print gr3
-  print $ removeEmptyProductionsGrammar gr3
-  let (gr4, _, _, _) = removeEmptyProductionsGrammar gr3
-  print gr4
-  print $ removeEmptyProductionsGrammar gr4
--}
