@@ -68,6 +68,10 @@ digit = (\ c -> read [c]) <$> satisfy isDigit `as` "digit"
 number :: Parser Int
 number = read <$> whitespaced (some (satisfy isDigit)) `as` "number"
 
+example :: Parser ()
+example =  (\ () () -> ()) <$> example <*> example
+       <|> satisfy (== '#') *> pure ()
+
 -----
 
 data P :: * -> * where
@@ -170,15 +174,20 @@ removeEmptyProductionsGrammar (Grammar ps s ts names) = Grammar ps' s ts names
 
     isNonTerminal s = isNothing (lookup s ts)
 
-    inline i = 
-      if isNonTerminal i && i `elem` acyclic && fromJust (lookup i count) == 1
-      then case find i of
-             [Production _ (Symbols ss)] -> [ Symbol s | Symbol s <- ss ]
-             _ -> error "impossible"
-      else [i]
+    inline i 
+      | isNonTerminal i && i `elem` acyclic =
+        case find i of
+          [Production _ (Symbols ss)] -> [ Symbol s | Symbol s <- ss ]
+          _ -> [i]
+      | isNonTerminal i =
+        -- Really need to do a loop-break here.
+        -- s1 -> s2; s2 -> s1, will break.
+        case find i of
+          [Production _ (Symbols [s])] -> [s]
+          _ -> [i]
+      | otherwise = [i]
 
     find i = [ p | p@(Production j _) <- ps, i == j ]
-
 
 fixGrammar :: (Grammar -> Grammar) -> Grammar -> Grammar
 -- fixGrammar f g = f g
@@ -192,7 +201,8 @@ fixGrammar f g0@(Grammar ps0 s0 ts0 names0)
 
 main = do
   print "Starting"
-  g <- reifyGraph number
+--  g <- reifyGraph number
+  g <- reifyGraph example
   print g
   let gr = parseGraphToGrammar g
   print gr
