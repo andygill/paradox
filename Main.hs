@@ -84,72 +84,72 @@ instance Show u => Show (P u) where
   show (SatP _) = "Sat *"
   show (AsP u s) = "As " ++ show u ++ " " ++ show s
 
-type Id = Int
-
-data Symbol 
-  = Terminal (Char -> Bool)
-  | NonTerminal Id
+newtype Symbol = Symbol Int
+  deriving (Eq, Ord)
 
 instance Show Symbol where
-  show (Terminal _)    = "sat"
-  show (NonTerminal s) = "e" ++ show s
+  show (Symbol s) = "s" ++ show s
 
 newtype Symbols = Symbols [Symbol]
+  deriving (Eq, Ord)
 
 instance Show Symbols where
   show (Symbols ss) = unwords (map show ss)
 
-data Production = Production Id Symbols
+data Production = Production Symbol Symbols
+  deriving (Eq, Ord)
 
 instance Show Production where
   show (Production s ss) = 
-    "e" ++ show s ++ " -> " ++ show ss
+    show s ++ " -> " ++ show ss
 
 -- instance Eq Production where
 
 data Grammar = Grammar 
   { productions :: [Production]
-  , start       :: Id
---  , terminals   :: [(Id, Char -> Bool)]
-  , aliases     :: [(Id, String)]      -- user generated symbol names
+  , start       :: Symbol
+  , terminals   :: [(Symbol, Char -> Bool)]
+  , aliases     :: [(Symbol, String)]       -- user generated symbol names
   }
 
 instance Show Grammar where
-  show (Grammar ps s as) = 
-      unlines $ ("names: " ++ show as) : ("start: " ++ show s) : map show ps
+  show (Grammar ps s ts as) = 
+      unlines $ 
+        ("names: " ++ show as)  :
+        ("terminal: " ++ show (map fst ts))  :
+        ("start: " ++ show s) : 
+        map show ps
 
 parseGraphToGrammar :: Graph P -> Grammar
-parseGraphToGrammar (Graph gs s) = Grammar ps s names
+parseGraphToGrammar (Graph gs s) = Grammar ps (Symbol s) ts names
   where
     ps    = concatMap mkProds gs
 
     mkProds (i, PureP)     = [ mkProd i [] ]
-    mkProds (i, ApP s1 s2) = [ mkProd i [NonTerminal s1, NonTerminal s2 ] ]
-    mkProds (i, AltsP ss)  = [ mkProd i [NonTerminal s] | s <- ss ] 
-    mkProds (i, SatP p)    = [ mkProd i [Terminal p] ]
-    mkProds (i, AsP s _)   = [ mkProd i  [NonTerminal s] ]
+    mkProds (i, ApP s1 s2) = [ mkProd i [Symbol s1, Symbol s2 ] ]
+    mkProds (i, AltsP ss)  = [ mkProd i [Symbol s] | s <- ss ] 
+    mkProds (i, SatP p)    = [ ]
+    mkProds (i, AsP s _)   = [ mkProd i [Symbol s] ]
 
-    mkProd i ss = Production i $ Symbols ss
+    mkProd i ss = Production (Symbol i) $ Symbols ss
 
-    names = [ (i,n) | (i, AsP _ n) <- gs ]
+    ts    = [ (Symbol i,p) | (i, SatP p) <- gs ]
+    names = [ (Symbol i,n) | (i, AsP _ n) <- gs ]
 
-
---removeEmptyProductionsGrammar :: Grammar -> Grammar
-removeEmptyProductionsGrammar (Grammar ps s names) = 
-    (Grammar ps' s names, count, empty, scc)
+removeEmptyProductionsGrammar :: Grammar -> Grammar
+removeEmptyProductionsGrammar (Grammar ps s ts names) = Grammar ps' s ts names
   where
     scc = G.stronglyConnComp
-          [ (i, i, nonTerminalsIn i)
+          [ (i, i, nub (symbolsIn i))
           | i <- nub [ j | Production j _ <- ps ]
           ]
-
     acyclic = [ i | G.AcyclicSCC i <- scc ]
 
-    nonTerminalsIn i = 
+    symbolsIn i = 
         [ s
         | Production j (Symbols ss) <- ps
         , j == i
-        , NonTerminal s <- ss
+        , s <- ss
         ]
 
     ps' = dce [ Production i (Symbols (concatMap inline ss))
@@ -160,7 +160,7 @@ removeEmptyProductionsGrammar (Grammar ps s names) =
       where live = s : 
               [ s
               | Production _ (Symbols ss) <- xs            
-              , NonTerminal s <- ss
+              , s <- ss
               ] 
 
     count = 
@@ -168,32 +168,28 @@ removeEmptyProductionsGrammar (Grammar ps s names) =
       | v <- group $ sort [ i | Production i _ <- ps ]
       ]
 
-    inline (Terminal p) = [Terminal p]
-    inline (NonTerminal i) = 
-      if i `elem` acyclic &&  fromJust (lookup i count) == 1
+    isNonTerminal s = isNothing (lookup s ts)
+
+    inline i = 
+      if isNonTerminal i && i `elem` acyclic && fromJust (lookup i count) == 1
       then case find i of
-             [Production _ (Symbols ss)] -> ss
+             [Production _ (Symbols ss)] -> [ Symbol s | Symbol s <- ss ]
              _ -> error "impossible"
-      else [NonTerminal i]
+      else [i]
 
     find i = [ p | p@(Production j _) <- ps, i == j ]
 
-    isNotEmpty (Terminal p) = True
-    isNotEmpty (NonTerminal i) = i `notElem` empty
 
-    empty =
-      [ i
-      | Production i (Symbols []) <- ps 
-      , fromJust (lookup i count) == 1
-      ]
-{-
-fixGrammer :: (Grammar -> Grammar) -> Grammar -> Grammar
-fixGrammer f g0@(Grammar ps0 s0 names0) 
-    | s0 == s1 && names0 == names1 && map 
-
+fixGrammar :: (Grammar -> Grammar) -> Grammar -> Grammar
+-- fixGrammar f g = f g
+fixGrammar f g0@(Grammar ps0 s0 ts0 names0) 
+    | ps0 == ps1 && s0 == s1 && map fst ts0 == map fst ts1 && names0 == names1
+    = g0
+    | otherwise = fixGrammar f g1
   where
-    g1@(Grammar ps1 s1 names1) = f g0
--}
+    g1@(Grammar ps1 s1 ts1 names1) = f g0
+
+
 main = do
   print "Starting"
   g <- reifyGraph number
@@ -201,8 +197,9 @@ main = do
   let gr = parseGraphToGrammar g
   print gr
   print $ removeEmptyProductionsGrammar gr
-  let (gr2, _, _, _) = removeEmptyProductionsGrammar gr
+  let gr2 = fixGrammar removeEmptyProductionsGrammar gr
   print gr2
+{-
   print $ removeEmptyProductionsGrammar gr2
   let (gr3, _, _, _) = removeEmptyProductionsGrammar gr2
   print gr3
@@ -210,3 +207,4 @@ main = do
   let (gr4, _, _, _) = removeEmptyProductionsGrammar gr3
   print gr4
   print $ removeEmptyProductionsGrammar gr4
+-}
