@@ -57,7 +57,7 @@ instance MuRef (Parser a) where
 -- numbers
 
 whitespace :: Parser ()
-whitespace = some (satisfy isSpace) *> pure ()
+whitespace = some (satisfy isSpace) *> pure () `as` "whitespace"
 
 whitespaced :: Parser a -> Parser a
 whitespaced p = whitespace *> p <* whitespace
@@ -71,6 +71,14 @@ number = read <$> whitespaced (some (satisfy isDigit)) `as` "number"
 example :: Parser ()
 example =  (\ () () -> ()) <$> example <*> example
        <|> satisfy (== '#') *> pure ()
+
+symbol :: String -> Parser ()
+symbol str = whitespaced (sequenceA [satisfy (== c) | c <- str ]) *> pure () `as` show str
+
+adder :: Parser ()
+adder = (\ () _ () -> ()) <$> adder <*> symbol "+" <*> adder
+    <|> (\ () _ () -> ()) <$> adder <*> symbol "-" <*> adder
+    <|> const () <$> number
 
 -----
 
@@ -129,11 +137,32 @@ data Grammar = Grammar
 
 instance Show Grammar where
   show (Grammar ps s ts as) = 
-      unlines $ 
+      unlines (
         ("names: " ++ show as)  :
         ("terminal: " ++ show (map fst ts))  :
         ("start: " ++ show s) : 
-        map show ps
+        terms) ++ show scc
+    where
+      terms = concatMap group scc
+
+      group (G.CyclicSCC is) = ["-- rec"] ++ concatMap (map show) (map find is) ++ [""]
+      group (G.AcyclicSCC i) = map show $ find i
+
+      find :: Symbol -> [Production]
+      find i = [ p | p@(Production j _) <- ps, i == j ]
+
+      scc = G.stronglyConnComp
+            [ (i, i, nub (symbolsIn i))
+            | i <- nub [ j | Production j _ <- ps ]
+            ]
+
+      symbolsIn i = 
+          [ s
+          | Production j (Symbols ss) <- ps
+          , j == i
+          , Right s <- ss
+          ]
+
 
 parseGraphToGrammar :: Graph P -> Grammar
 parseGraphToGrammar (Graph gs s) = Grammar ps (Symbol s) ts names
@@ -156,8 +185,19 @@ parseGraphToGrammar (Graph gs s) = Grammar ps (Symbol s) ts names
     names = [ (Symbol i,n) | (i, AsP _ n) <- gs ]
 
 removeEmptyProductionsGrammar :: Grammar -> Grammar
-removeEmptyProductionsGrammar (Grammar ps s ts names) = Grammar ps' s ts names
+removeEmptyProductionsGrammar (Grammar ps s ts names) =
+    traceShow ("aliases", aliases) $ 
+    Grammar ps' s ts (nub (names ++ aliases))
   where
+    named = fst <$> names
+
+    aliases = [ (s,n)
+              | (i,n) <- names
+              , let ps' = [ p | p@(Production j (Symbols ss)) <- ps, i == j ]
+              , length ps' == 1 -- only one choise
+              , Production _ (Symbols [Right s]) <- ps'
+              ]
+
     scc = G.stronglyConnComp
           [ (i, i, nub (symbolsIn i))
           | i <- nub [ j | Production j _ <- ps ]
@@ -189,18 +229,20 @@ removeEmptyProductionsGrammar (Grammar ps s ts names) = Grammar ps' s ts names
 
     isNonTerminal s = isNothing (lookup s ts)
 
-    inline (Left d) = [Left d]
+    inline (Left d) = [Left d] -- signposts stay
     inline (Right i)
-      | isNonTerminal i && i `elem` acyclic =
+      | isNonTerminal i && i `elem` acyclic && i `notElem` named =
         case find i of
           [Production _ (Symbols ss)] -> ss
           _ -> [Right i]
       | isNonTerminal i =
         -- Really need to do a loop-break here.
         -- s1 -> s2; s2 -> s1, will break.
+        -- But this is a S ==>* S example.
         case find i of
-          [Production _ (Symbols [s])] -> [s]
+          [Production _ (Symbols ss)] | length [ () | Right _ <- ss ] == 1 -> ss
           _ -> [Right i]
+
       | otherwise = [Right i]
 
     find i = [ p | p@(Production j _) <- ps, i == j ]
@@ -218,9 +260,11 @@ fixGrammar f g0@(Grammar ps0 s0 ts0 names0)
 main = do
   print "Starting"
 --  g <- reifyGraph number
-  g <- reifyGraph example
+--  g <- reifyGraph example
+  g <- reifyGraph adder
   print g
   let gr = parseGraphToGrammar g
   print gr
   let gr2 = fixGrammar removeEmptyProductionsGrammar gr
   print gr2
+
